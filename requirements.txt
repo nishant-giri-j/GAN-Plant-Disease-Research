@@ -1,0 +1,13 @@
+torch>=1.13.0
+torchvision>=0.14.0
+tqdm
+matplotlib
+scikit-learn
+scipy
+pytorch-fid
+lpips
+requests
+click
+ninja
+imageio
+imageio-ffmpeg
