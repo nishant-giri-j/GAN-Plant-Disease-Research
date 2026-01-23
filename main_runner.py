@@ -9,7 +9,7 @@ import torch.nn as nn
 # ### USER CONFIGURATION ###
 # ==========================================
 TARGET_CLASS = "Septoria"       # The folder name inside 'data/processed'
-GENERATE_COUNT = 4        # Number of images to generate
+GENERATE_COUNT = 1000      # Number of images to generate
 GPUS = "1"                      # GPUs to use (if available)
 
 # --- AUTOMATIC GPU CHECK ---
