@@ -5,25 +5,24 @@ import sys
 import torch
 import torch.nn as nn
 import json
+import re
 
 # ==========================================
-# ### RESEARCH PROBLEM CONFIGURATION ###
+# ### RESEARCH CONFIGURATION ###
 # ==========================================
 TARGET_CLASS = "Septoria"       # The disease class to augment
 GPUS = "1"                      # Number of GPUs available
 
-# --- EXPERIMENTAL SETTINGS ---
-# "TEST": Fast verification (1 hr). "RESEARCH": Full paper results (Days).
+# "RESEARCH" = Full study. "TEST" = Fast check.
 MODE = "RESEARCH" 
 
 if MODE == "TEST":
     print(">>> MODE: FAST PROTOTYPING (Low Quality)")
-    GENERATE_COUNT = 50         # Generate minimal images
+    GENERATE_COUNT = 50         
     STYLEGAN_KIMG = "20"        
     PROJECTED_KIMG = "20"       
     LIGHTWEIGHT_STEPS = "100"   
     DCGAN_EPOCHS = "5"          
-
 elif MODE == "RESEARCH":
     print(">>> MODE: FULL ACADEMIC STUDY (High Fidelity)")
     GENERATE_COUNT = 1000       # Standard sample size for FID
@@ -33,27 +32,54 @@ elif MODE == "RESEARCH":
     LIGHTWEIGHT_STEPS = "150000" # Mobile/Edge Optimization Focus
     DCGAN_EPOCHS = "200"        # Baseline Comparison
 
-# ==========================================
 # --- PATH DEFINITIONS ---
 BASE_DIR = os.getcwd()
 DATA_PATH_TARGET = os.path.join(BASE_DIR, "data", "processed", TARGET_CLASS)
 DATA_PATH_ROOT = os.path.join(BASE_DIR, "data", "processed")
 CHECKPOINT_ROOT = os.path.join(BASE_DIR, "models", "checkpoints")
 SYNTHETIC_ROOT = os.path.join(BASE_DIR, "data", "synthetic")
-RESULTS_LOG = os.path.join(BASE_DIR, "research_results.json")
+RESULTS_FILE = "research_results.json"
 
 os.makedirs(CHECKPOINT_ROOT, exist_ok=True)
 
 # --- UTILITIES ---
-def run_command(cmd):
-    print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: {e}")
+def run_command(cmd, capture=False):
+    """Runs command. If capture=True, returns the output string for parsing."""
+    cmd_str = ' '.join(cmd) if isinstance(cmd, list) else cmd
+    print(f"Running: {cmd_str}")
+    
+    if capture:
+        try:
+            # Captures stdout to find scores
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            print(result.stdout) # Print so user sees it too
+            return result.stdout
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: {e}")
+            return ""
+    else:
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: {e}")
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
+
+def update_results_file(model_name, metric, value):
+    """Saves numbers to JSON so plot_graphs.py can read them."""
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE, 'r') as f:
+            data = json.load(f)
+    else:
+        data = {}
+
+    if model_name not in data: data[model_name] = {}
+    data[model_name][metric] = float(value)
+
+    with open(RESULTS_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
+    print(f">>> Logged {metric.upper()} for {model_name}: {value}")
 
 def find_latest_stylegan_pkl(checkpoint_folder):
     if not os.path.exists(checkpoint_folder): return None
@@ -70,7 +96,6 @@ def train_model(gan_name):
     print(f"\n---> [RESEARCH PHASE 1] TRAINING ARCHITECTURE: {gan_name}")
     
     if gan_name == "dcgan_diffaug":
-        # Baseline Model
         out_dir = os.path.join(CHECKPOINT_ROOT, "dcgan_diffaug")
         script = os.path.join(BASE_DIR, "models", "dcgan_diffaug", "train.py")
         ensure_dir(out_dir)
@@ -79,7 +104,6 @@ def train_model(gan_name):
         run_command(cmd)
 
     elif gan_name == "lightweight_gan":
-        # Efficiency Model (Addressing "Biologically Restricted" compute)
         out_dir = os.path.join(CHECKPOINT_ROOT, "lightweight_gan")
         ensure_dir(out_dir)
         try:
@@ -98,7 +122,6 @@ def train_model(gan_name):
             print("! Error: 'lightweight_gan' not found. Run: pip install lightweight-gan")
 
     elif gan_name == "projected_gan":
-        # High-Fidelity Model
         out_dir = os.path.join(CHECKPOINT_ROOT, "projected_gan")
         script = os.path.join(BASE_DIR, "models", "projected_gan", "train.py")
         cmd = [sys.executable, script, "--outdir", out_dir, "--data", DATA_PATH_TARGET, 
@@ -106,7 +129,6 @@ def train_model(gan_name):
         run_command(cmd)
 
     elif gan_name == "stylegan2_ada":
-        # State-of-the-Art Benchmark
         out_dir = os.path.join(CHECKPOINT_ROOT, "stylegan2_ada")
         script = os.path.join(BASE_DIR, "models", "stylegan2-ada-pytorch", "train.py")
         cmd = [sys.executable, script, "--outdir", out_dir, "--data", DATA_PATH_TARGET, 
@@ -179,25 +201,48 @@ def generate_images(gan_name):
             run_command(cmd)
 
 # ---------------------------------------------------------
-# PHASE 3: EVALUATION (HYPOTHESIS TESTING)
+# PHASE 3: EVALUATION (WITH AUTO-LOGGING)
 # ---------------------------------------------------------
 def evaluate_model(gan_name):
     print(f"\n---> [RESEARCH PHASE 3] TESTING HYPOTHESIS: {gan_name}")
     real_path = os.path.join(DATA_PATH_ROOT, TARGET_CLASS)
     syn_folder = os.path.join(SYNTHETIC_ROOT, gan_name, TARGET_CLASS)
-    
+
+    # --- BASELINE HANDLING ---
+    if gan_name == "baseline":
+        print("Running Baseline Classifier (Real Data Only)...")
+        output = run_command([sys.executable, "src/train_classifier.py", "--gan_name", "baseline", "--use_synthetic", "False"], capture=True)
+        # Regex to find F1 score in the output text
+        match = re.search(r"F1-Score = ([\d\.]+)", output)
+        if match:
+            update_results_file("baseline", "f1", match.group(1))
+        return
+
+    # --- GAN EVALUATION ---
     if not os.path.exists(syn_folder) or len(os.listdir(syn_folder)) == 0:
         print("No synthetic images found. Skipping evaluation.")
         return
 
     # 1. FID Score (Quantifying Image Quality)
     print(">>> Calculating FID (Lower is Better)...")
-    run_command([sys.executable, "src/calc_fid.py", "--real_path", real_path, "--fake_path", syn_folder])
+    output = run_command([sys.executable, "src/calc_fid.py", "--real_path", real_path, "--fake_path", syn_folder], capture=True)
+    # Find "FID SCORE: 123.45"
+    match = re.search(r"FID SCORE: ([\d\.]+)", output)
+    if match:
+        update_results_file(gan_name, "fid", match.group(1))
     
     # 2. Classifier Improvement (Quantifying Utility)
     print(">>> Training Classifier (Higher F1 is Better)...")
-    # Note: 'train_classifier.py' prints the final F1 score improvement
-    run_command([sys.executable, "src/train_classifier.py", "--gan_name", gan_name, "--use_synthetic", "True"])
+    output = run_command([sys.executable, "src/train_classifier.py", "--gan_name", gan_name, "--use_synthetic", "True"], capture=True)
+    # Find "F1-Score = 0.85"
+    match = re.search(r"F1-Score = ([\d\.]+)", output)
+    if match:
+        update_results_file(gan_name, "f1", match.group(1))
+
+def generate_graphs():
+    print("\n---> GENERATING RESEARCH GRAPHS...")
+    # Calls the separate plotting script
+    run_command([sys.executable, "src/plot_graphs.py"])
 
 # ---------------------------------------------------------
 # MAIN CONTROL PANEL
@@ -217,7 +262,7 @@ def main():
         print("3. Train High-Fidelity (Projected) [Est: 24 hrs]")
         print("4. Train State-of-Art (StyleGAN2)  [Est: 4 Days]")
         print("-" * 30)
-        print("5. Run Full Evaluation Protocol (All Models)")
+        print("5. Run Full Evaluation Protocol (Updates JSON & Plots Graphs)")
         print("6. Exit")
         
         choice = input("\nEnter choice (1-6): ").strip()
@@ -233,13 +278,15 @@ def main():
             
         elif choice == '5':
             print("\n>>> STARTING COMPARATIVE EVALUATION...")
-            # Step A: Establish Pure Baseline (No Synthetic Data)
-            print("\n[BENCHMARK] Training Real-Data Only Baseline...")
-            run_command([sys.executable, "src/train_classifier.py", "--gan_name", "baseline", "--use_synthetic", "False"])
+            # Step A: Benchmark Pure Baseline
+            evaluate_model("baseline")
             
-            # Step B: Evaluate Each GAN
+            # Step B: Benchmark Each GAN
             for g in ["dcgan_diffaug", "lightweight_gan", "projected_gan", "stylegan2_ada"]:
                 evaluate_model(g)
+
+            # Step C: Draw the Graphs
+            generate_graphs()
                 
         elif choice == '6':
             print("Exiting pipeline.")
