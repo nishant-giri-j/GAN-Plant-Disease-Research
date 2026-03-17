@@ -17,6 +17,10 @@ def resize_images(input_dir, output_dir, size=256):
         T.CenterCrop(size), # Ensures square aspect ratio
     ])
 
+    if not os.path.exists(input_dir):
+        print(f"ERROR: Input directory '{input_dir}' not found.")
+        return
+
     classes = [d for d in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, d))]
     print(f"Found classes: {classes}")
 
@@ -38,9 +42,7 @@ def resize_images(input_dir, output_dir, size=256):
                     print(f"Error processing {fname}: {e}")
 
 if __name__ == "__main__":
-    # Default Paths matching your structure
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
     PROC_DIR = os.path.join(BASE_DIR, "data", "processed")
-    
     resize_images(RAW_DIR, PROC_DIR)

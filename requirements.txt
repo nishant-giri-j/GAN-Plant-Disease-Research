@@ -11,3 +11,5 @@ click
 ninja
 imageio
 imageio-ffmpeg
+scikit-image
+ipython
